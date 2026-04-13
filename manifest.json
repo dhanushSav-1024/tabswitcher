@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "TabFlow",
+  "version": "1.3.0",
+  "description": "Blazing-fast keyboard-driven tab switcher with smart search",
+  "icons": {
+    "48": "icons/icon48.png",
+    "96": "icons/icon96.png"
+  },
+  "action": {
+    "default_popup": null,
+    "default_icon": {
+      "48": "icons/icon48.png"
+    }
+  },
+  "commands": {
+    "open-tab-switcher": {
+      "suggested_key": {
+        "default": "Alt+Space"
+      },
+      "description": "Open TabFlow tab switcher"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["switcher.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "tabs",
+    "storage",
+    "scripting"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tabflow@extension",
+      "strict_min_version": "128.0"
+    }
+  }
+}
