@@ -1,14 +1,20 @@
+// TabFlow Background Service Worker
+// Tracks tab access recency using a Most Recently Used (MRU) list
+
 const MRU_KEY = "tabflow_mru";
 
+// Load MRU from storage
 async function getMRU() {
   const result = await browser.storage.local.get(MRU_KEY);
   return result[MRU_KEY] || [];
 }
 
+// Save MRU to storage
 async function saveMRU(mru) {
   await browser.storage.local.set({ [MRU_KEY]: mru });
 }
 
+// Push tab to front of MRU list (max 500 entries)
 async function bumpTab(tabId) {
   let mru = await getMRU();
   mru = mru.filter((id) => id !== tabId);
@@ -17,75 +23,68 @@ async function bumpTab(tabId) {
   await saveMRU(mru);
 }
 
+// Clean up closed tabs from MRU
 async function removeTab(tabId) {
   let mru = await getMRU();
   mru = mru.filter((id) => id !== tabId);
   await saveMRU(mru);
 }
 
-browser.tabs.onActivated.addListener(({ tabId }) => bumpTab(tabId));
-browser.tabs.onCreated.addListener((tab) => bumpTab(tab.id));
-browser.tabs.onRemoved.addListener((tabId) => removeTab(tabId));
-
-async function openSwitcher() {
-  const [activeTab] = await browser.tabs.query({
-    currentWindow: true,
-    active: true,
-  });
-  if (!activeTab) return;
-
-  const url = activeTab.url || "";
-  if (
-    url.startsWith("about:") ||
-    url.startsWith("moz-extension:") ||
-    url.startsWith("resource:")
-  ) {
-    return;
-  }
-
-  try {
-    await browser.tabs.sendMessage(activeTab.id, { type: "TABFLOW_OPEN" });
-  } catch {
-    try {
-      await browser.scripting.executeScript({
-        target: { tabId: activeTab.id },
-        files: ["content.js"],
-      });
-      await browser.scripting.insertCSS({
-        target: { tabId: activeTab.id },
-        files: ["switcher.css"],
-      });
-      setTimeout(async () => {
-        try {
-          await browser.tabs.sendMessage(activeTab.id, {
-            type: "TABFLOW_OPEN",
-          });
-        } catch {}
-      }, 80);
-    } catch (e) {
-      console.error("TabFlow: inject failed", e);
-    }
-  }
-}
-
-browser.commands.onCommand.addListener((command) => {
-  if (command === "open-tab-switcher") openSwitcher();
+// Track tab activations
+browser.tabs.onActivated.addListener(({ tabId }) => {
+  bumpTab(tabId);
 });
 
+// Track tab creation
+browser.tabs.onCreated.addListener((tab) => {
+  bumpTab(tab.id);
+});
+
+// Clean up on tab removal
+browser.tabs.onRemoved.addListener((tabId) => {
+  removeTab(tabId);
+});
+
+// Listen for keyboard command
+browser.commands.onCommand.addListener(async (command) => {
+  if (command === "open-tab-switcher") {
+    const tabs = await browser.tabs.query({ currentWindow: true });
+    const activeTab = tabs.find((t) => t.active);
+    if (activeTab) {
+      browser.tabs
+        .sendMessage(activeTab.id, { type: "TABFLOW_OPEN" })
+        .catch(() => {
+          // If content script not ready, inject it
+          browser.scripting.executeScript({
+            target: { tabId: activeTab.id },
+            files: ["content.js"],
+          });
+        });
+    }
+  }
+});
+
+// Handle messages from content script
 browser.runtime.onMessage.addListener(async (msg, sender) => {
   if (msg.type === "GET_TABS") {
     const [allTabs, mru] = await Promise.all([
       browser.tabs.query({ currentWindow: true }),
       getMRU(),
     ]);
+
+    // Sort by MRU order; tabs not in MRU go to end sorted by lastAccessed
     const mruIndex = (tab) => {
-      const i = mru.indexOf(tab.id);
-      return i === -1 ? Infinity : i;
+      const idx = mru.indexOf(tab.id);
+      return idx === -1 ? Infinity : idx;
     };
+
     const sorted = [...allTabs].sort((a, b) => {
-      const d = mruIndex(a) - mruIndex(b);
-      return d !== 0 ? d : (b.lastAccessed || 0) - (a.lastAccessed || 0);
+      const ai = mruIndex(a);
+      const bi = mruIndex(b);
+      if (ai !== bi) return ai - bi;
+      return (b.lastAccessed || 0) - (a.lastAccessed || 0);
     });
+
     return { tabs: sorted, currentTabId: sender.tab?.id };
   }
 
@@ -109,7 +108,7 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
   }
 
   if (msg.type === "SHORTCUT_UPDATED") {
-    const tabs = await browser.tabs.query({ currentWindow: false });
+    const tabs = await browser.tabs.query({});
     for (const tab of tabs) {
       try {
         await browser.tabs.sendMessage(tab.id, {
